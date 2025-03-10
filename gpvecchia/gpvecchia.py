@@ -1,7 +1,7 @@
 import numpy as np
 from numba import njit, prange, config, set_num_threads
 from psutil import cpu_count
-from .vecchia_utils import find_nn, build_mahalanobis, backward_solve, forward_solve, forward_solve_sp, get_pred_nn
+from vecchia_utils import find_nn, build_mahalanobis, backward_solve, forward_solve, forward_solve_sp, get_pred_nn
 
 from gptide.gp import GPtide
 

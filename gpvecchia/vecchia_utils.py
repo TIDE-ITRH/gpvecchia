@@ -62,7 +62,7 @@ def get_pred_nn(query, x, m=50, method='exact', size=40, efSearch=100, n_jobs=-1
             NN = neigh.kneighbors(query, n_neighbors=m, return_distance=False)  # Find the nearest neighbors
     return NN
 
-@njit(cache=True)
+# @njit(cache=True)
 def nn_brute(x, m):
     """
     Brute-force nearest neighbor search.
@@ -82,7 +82,7 @@ def nn_brute(x, m):
         NNarray[i,:min(m+1, i+1)] = order[:min(m+1, i+1)]  # Store the nearest neighbors
     return NNarray
 
-@njit(cache=True)
+# @njit(cache=True)
 def extract_NN_m(NN_mask, less_than_k_mask, m):
     """
     Extract the nearest neighbors from the mask.
