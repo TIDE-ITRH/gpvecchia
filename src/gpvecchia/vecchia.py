@@ -1,9 +1,9 @@
 import numpy as np
 from numba import njit, prange, config, set_num_threads
 from psutil import cpu_count
-from vecchia_utils import find_nn, build_mahalanobis, backward_solve, forward_solve, forward_solve_sp, get_pred_nn
 
-from gptide.gp import GPtide
+from .vecchia_utils import find_nn, backward_solve, forward_solve, forward_solve_sp, get_pred_nn
+from .gpbase import GPtide
 
 core_num = cpu_count(logical = False)
 max_threads = config.NUMBA_NUM_THREADS
@@ -25,11 +25,11 @@ class GPtideVecchia(GPtide):
         xm: numpy.ndarray [M, D]
             Output/target point locations
         noise_var: float
-            Data noise parameter (as variance)
+            Data noise parameter (as std dev)
         cov_func: callable function 
             Function used to compute the covariance matrices
         cov_params: tuple
-            Parameters passed to `cov_func` - assumes this is a tuple of (gp_variance, lengthscale_1, ..., lengthscale_D)
+            Parameters passed to `cov_func` - assumes this is a tuple of (gp_stddev, lengthscale_1, ..., lengthscale_D)
 
         Other Parameters
         ----------------
@@ -53,6 +53,12 @@ class GPtideVecchia(GPtide):
             kwargs passed to the order function
         nn_kwargs: dict
             kwargs passed to the nearest neighbours function
+        nn_array: numpy.ndarray
+            the nearest neighbours array (if pre-computed)
+            default is None
+        jitter: float
+            small value added to the diagonal of the covariance matrix
+            default is 1e-7
     """
 
             
@@ -72,13 +78,14 @@ class GPtideVecchia(GPtide):
             raise TypeError('numneighbours must be an integer (or castable to an integer)')
         assert self.nnum > 1, 'numneighbours must be greater than 1'
                     
-        # Build the Mahalanobis matrix
+        # Build the scaling matrix
         assert len(self.cov_params[1:]) == self.D, 'Number of covariance length scales must match the number of dimensions'
         if 'offdiags' in self.cov_kwargs:
             self.offdiags = self.cov_kwargs['offdiags']
         else:
             self.offdiags = None
-        self._build_A_matrix(self.cov_params[1:], self.offdiags)
+        
+        self._build_scale_matrix(self.cov_params[1:], self.offdiags)
         
         # Run the re-ordering function
         if self.order_func is not None:
@@ -93,8 +100,13 @@ class GPtideVecchia(GPtide):
         
         # Check if type is float and convert to array - this is a bit shit
         if isinstance(self.mu_d, float):
-            self.mu_d = np.array([self.mu_d])[:,None]
+            # self.mu_d = np.array([self.mu_d])[:,None]
+            self.mu_d = np.repeat(self.mu_d, len(self.xd))[:,None]
         if (self.mu_d.ndim == 1):
+            if len(self.mu_d) == 1:
+                self.mu_d = np.repeat(self.mu_d, len(self.xd))
+            else:
+                assert ((len(self.mu_d) == 1) | (len(self.mu_d) == len(self.xd))), 'Length of mean function must be 1 or equal to input coords' 
             self.mu_d = self.mu_d[:,None]
         if self.mu_d.shape[0] > 1:
             self.mu_d = self.mu_d[self.ord]
@@ -103,8 +115,10 @@ class GPtideVecchia(GPtide):
         self.xd = self.xd @ self.A_inv
         self.xm = self.xm @ self.A_inv
             
-        # Find the nearest neighbours
-        self.find_neighbours(**self.nn_kwargs)
+        # Find the nearest neighbours if not supplied
+        if self.nn_array is None:
+            self.find_neighbours(**self.nn_kwargs)
+            
         
     def _calc_cov(self, cov_func, cov_params):
         """Compute the covariance functions"""
@@ -114,9 +128,9 @@ class GPtideVecchia(GPtide):
         """Calculate the cholesky factorization"""
         return None, None     
         
-    def _build_A_matrix(self, A_diags, A_offdiag=None):
+    def _build_scale_matrix(self, A_diags, A_offdiag=None):
         """Build the scaling matrix for the Vecchia approximation"""
-        A = build_mahalanobis(A_diags, A_offdiag)
+        A = build_scaling_matrix(A_diags, A_offdiag)
         self.A_inv = np.linalg.inv(A)
         
     def find_neighbours(self, method='sklearn', **faiss_kwargs):
@@ -153,8 +167,8 @@ class GPtideVecchia(GPtide):
             # Prediction points don't need re-ordering
             nn_pred = get_pred_nn(self.xm, self.xd, m=self.nnum, method=method, **faiss_kwargs)
             
-        self.mean, self.err = gp_vecch(self.xd, self.xm, nn_pred, self.yd, self.cov_func, self.cov_params[0], self.sd)
-        return self.mu_m + self.mean, self.err  
+        self.mean, self.err = gp_vecch(self.xd, self.xm, nn_pred, self.yd, self.cov_func, self.cov_params[0]**2, self.sd**2)
+        return self.mu_m + self.mean, self.err**0.5
         
     def sample_prior(self, ptype='input', samples=1, add_noise=False):
         """
@@ -175,9 +189,9 @@ class GPtideVecchia(GPtide):
         if add_noise:
             noise = self.sd
         else:
-            noise = 1e-10
+            noise = self.jitter
 
-        prior_samples = fmvn_mu_sp(Xt, nn_array, self.cov_func, self.cov_params[0], noise, mu=mu, n_samples=samples)
+        prior_samples = fmvn_mu_sp(Xt, nn_array, self.cov_func, self.cov_params[0]**2, noise**2, mu=mu, n_samples=samples)
         # Re-order samples before returning
         return prior_samples[self.orig_ord]  
         
@@ -196,8 +210,43 @@ class GPtideVecchia(GPtide):
         # Re-order the data to match coords
         self.yd = yd[self.ord]
         
-        llik = vecchia_llik(self.xd, self.yd, self.mu_d, self.nn_array, self.cov_func, self.cov_params[0], self.sd)
+        llik = vecchia_llik(self.xd, self.yd, self.mu_d, self.nn_array, self.cov_func, self.cov_params[0]**2, self.sd**2)
         return llik
+    
+    
+    def conditional(self, yd, samples=1):
+        """
+        Draw samples from the conditional distribution given observed data.
+
+        Parameters
+        ----------
+        yd: numpy.ndarray [N, 1]
+            Observed data
+        samples: int (default=1)
+            Number of samples to draw
+
+        Returns
+        -------
+        numpy.ndarray
+            Samples from the conditional distribution
+        """
+        if yd.ndim == 1:
+            yd = yd[:, None]
+        assert yd.shape[0] == self.N, 'First dimension in input data must equal the number of training points'
+
+        # Re-order the data to match coords
+        self.yd = yd[self.ord] - self.mu_d
+
+        # Compute prediction nearest neighbours
+        nn_pred = get_pred_nn(self.xm, self.xd, m=self.nnum)
+        
+        # Use gp_vecch to get the mean and variance of the predictions
+        pred_mean, pred_var = gp_vecch(self.xd, self.xm, nn_pred, self.yd, self.cov_func, self.cov_params[0]**2, self.sd**2)
+
+        # Draw samples from the conditional distribution
+        samples_cond = np.random.randn(samples, len(pred_mean)) * np.sqrt(pred_var) + pred_mean
+
+        return samples_cond.T
   
 
 # @njit(cache=True)
@@ -205,7 +254,6 @@ def fmvn_mu_sp(X, NNarray, cov_func, scale, noise, mu=0.0, n_samples=1):
     """
     Generate multivariate Gaussian random samples with means.
     I think Ming commented out numba because it didn't make any difference (in my testing)
-    Need to add functionality to sample more than once**
     """
     d = X.shape[0]
     samples = np.zeros((X.shape[0], n_samples))
@@ -227,23 +275,17 @@ def vecchia_llik(X, y, mu, NNarray, cov_func, scale, noise):
         idx = NNarray[i]
         idx = idx[idx>=0][::-1]
         xi, yi, mi = X[idx,:], y[idx,:], mu[idx,:]
-        Ki = K_matrix(xi, xi, cov_func, noise/scale) # Deyu's code ?
-        # Ki = scale * K_matrix(xi, xi, cov_func, noise) # Will's code
+        Ki = scale * K_matrix(xi, xi, cov_func, noise/scale)
         Li = np.linalg.cholesky(Ki)  
-        Liyi = forward_solve(Li, yi) # Deyu's code ?
-        # Liyi = forward_solve(Li, yi - mi) # Will's code
+        Liyi = forward_solve(Li, yi - mi)
         
         # Log det
-        # logdet += 2*np.log(np.abs(Li[-1,-1])) # Deyu's code ?
-        logdet += 2*np.sum(np.log(np.diag(Li))) # Will's code
+        logdet += 2*np.log(np.abs(Li[-1,-1]))
         
         # Quadratic form    
-        # quad += Liyi[-1]**2 # Deyu's code ?
-        quad += np.sum(Liyi**2)  # Will's code
+        quad += Liyi[-1]**2
         
-    fac = n * np.log(2*np.pi)
-    llik = -0.5*(fac + logdet + quad/scale)  # Deyu's code ?
-    # llik = -0.5*(logdet + quad + fac) # Will's code
+    llik = -0.5*(logdet + quad)
     return llik
 
 
@@ -252,7 +294,7 @@ def K_matrix(X, Xpr, cov_func, noise):
     """
     Compute the covariance matrix using the specified kernel.
     
-    This function is variance = 1, variance scaling is done outside of this function.
+    This function is variance = 1 and length scale = 1, scaling is done outside of this function.
     
     X: Array of scaled points
     Xpr: Array of scaled points
@@ -261,6 +303,7 @@ def K_matrix(X, Xpr, cov_func, noise):
     Returns:
     Covariance matrix.
     """
+    # Determine whether to compute the full matrix - only required for somapling the conditional distribution 
     full_loop = True
     if X.shape[0] == Xpr.shape[0]:
         if np.equal(X, Xpr).all():
@@ -275,7 +318,7 @@ def K_matrix(X, Xpr, cov_func, noise):
             # only going up to the diagonal here
             for j in range(i + 1):
                 if i == j:
-                    K[i, j] = 1.0 + noise # we add variance here right??
+                    K[i, j] = 1.0 + noise
                 else:
                     dist = 0.0
                     for k in range(d):
@@ -325,8 +368,8 @@ def gp_vecch(xd, xm, NNarray, yd, cov_func, scale, noise):
         xm: Array of prediction points.
         NNarray: Array of nearest neighbor indices.
         yd: Array of training observations.
-        scale: Scale parameter of the kernel.
-        noise: Noise parameter of the kernel.
+        scale: Scale (variance) parameter of the kernel.
+        noise: Noise (variance) parameter of the kernel.
 
         Returns
         --------
@@ -342,7 +385,7 @@ def gp_vecch(xd, xm, NNarray, yd, cov_func, scale, noise):
     
     # Loop through the prediction points
     for i in prange(n_pred):
-        # Get the indices of the neighbors
+        # Get the indices of the neighbours
         idx = NNarray[i]
         idx = idx[idx >= 0]
         # Stack the training and prediction points
@@ -354,3 +397,42 @@ def gp_vecch(xd, xm, NNarray, yd, cov_func, scale, noise):
         pred_mean[i] = np.dot(Li[-1, :-1], forward_solve(Li[:-1, :-1], yi).flatten())
         pred_var[i] = scale * Li[-1, -1]**2
     return pred_mean, pred_var
+
+
+def build_scaling_matrix(length_scales, covariances):
+    """
+    Build an n x n covariance matrix where the diagonal contains the length scales
+    and the off-diagonals contain the covariances between dimensions.
+
+    Parameters
+    ----------
+    length_scales: list or array of length scales (diagonal elements)
+    covariances: list or array of covariances (off-diagonal elements)
+
+    Returns
+    -------
+    covariance_matrix: n x n numpy array
+        The resulting covariance matrix.
+    """
+    n = len(length_scales)
+
+    # Create an empty matrix
+    covariance_matrix = np.zeros((n, n))
+
+    # Fill the diagonal with length scales
+    for i in range(n):
+        covariance_matrix[i, i] = length_scales[i]
+
+    # Fill the off-diagonal elements with covariances
+    if covariances is None:
+        return covariance_matrix
+    
+    else:
+        k = 0
+        for i in range(n):
+            for j in range(i + 1, n):
+                covariance_matrix[i, j] = covariances[k]
+                covariance_matrix[j, i] = covariances[k]
+                k += 1
+
+        return covariance_matrix
