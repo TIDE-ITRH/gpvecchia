@@ -275,7 +275,7 @@ def vecchia_llik(X, y, mu, NNarray, cov_func, scale, noise):
         idx = NNarray[i]
         idx = idx[idx>=0][::-1]
         xi, yi, mi = X[idx,:], y[idx,:], mu[idx,:]
-        Ki = scale * K_matrix(xi, xi, cov_func, noise/scale)
+        Ki = scale * K_matrix(xi, xi, cov_func, noise)
         Li = np.linalg.cholesky(Ki)  
         Liyi = forward_solve(Li, yi - mi)
         
@@ -375,7 +375,7 @@ def gp_vecch(xd, xm, NNarray, yd, cov_func, scale, noise):
         --------
 
         pred_mean: numpy.ndarray
-            Mean and variance of the predictions.
+            Mean of the predictions.
         pred_var: numpy.ndarray
             Variance of the predictions.
     """
@@ -391,11 +391,11 @@ def gp_vecch(xd, xm, NNarray, yd, cov_func, scale, noise):
         # Stack the training and prediction points
         Xi = np.vstack((xd[idx, :], xm[i:i+1, :]))
         # Compute the covariance matrix
-        Ki = K_matrix(Xi, Xi, cov_func, noise)
+        Ki = scale * K_matrix(Xi, Xi, cov_func, noise)
         Li = np.linalg.cholesky(Ki)
         yi = yd[idx]
         pred_mean[i] = np.dot(Li[-1, :-1], forward_solve(Li[:-1, :-1], yi).flatten())
-        pred_var[i] = scale * Li[-1, -1]**2
+        pred_var[i] = Li[-1, -1]**2
     return pred_mean, pred_var
 
 
