@@ -5,7 +5,7 @@
 
 # gpvecchia
 
-Vecchia approximation routines for Gaussian Process and Data Assimilation. This code is a lightweight adaption of code from [this package]([https://gpvecchia.readthedocs.io/en/latest/examples.html](https://github.com/mingdeyu/DGP)). 
+Vecchia approximation routines for Gaussian Process and Data Assimilation. This code is a lightweight adaption of code from [this package]([https://gpvecchia.readthedocs.io/en/latest/examples.html](https://github.com/mingdeyu/DGP). 
 
 Please see the [examples](https://gpvecchia.readthedocs.io/en/latest/examples.html) for particular use cases.
 
