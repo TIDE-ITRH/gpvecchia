@@ -4,6 +4,8 @@ from psutil import cpu_count
 
 from .vecchia_utils import find_nn, backward_solve, forward_solve, forward_solve_sp, get_pred_nn
 from .gpbase import GPtide
+from .cov import transform_coordinates
+
 
 core_num = cpu_count(logical = False)
 max_threads = config.NUMBA_NUM_THREADS
@@ -35,10 +37,16 @@ class GPtideVecchia(GPtide):
         ----------------
         nnum: int (default=30)
             Number of nearest neighbours to use in the Vecchia approximation
-        P: int (default=1)
-            number of output dimensions
+        scale_coords: bool (default=False)
+            Whether to scale the input coordinates prior to nearest neighbour search - important for anisotropic kernels
+            This will assume the last D elements of `cov_params` are the scaling elements (unless rotate_coords is True)
+        rotate_coords: bool (default=False)
+            Whether to rotate the input coordinates prior to nearest neighbour search
+            This will assume the last D elements of `cov_params` are the rotation angles
         cov_kwargs: dictionary, optional
-            keyword arguments passed to `cov_func`, including 'offdiags' for the off-diagonal elements of the scaling matrix
+            keyword arguments passed to `cov_func`, including the indexes of the scaling params inside covparams.
+            E.g. {'diag_idx: [1, 2, 3], 'offdiag_idx': [4, 5, 6]} where cov_params[cov_kwargs['diag_idx']] are the diagonal elements
+            of the scaling matrix A and cov_params[cov_kwargs['offdiag_idx']] are the off-diagonal elements.
         mean_func: callable function
             Returns the mean function
         mean_params: tuple
@@ -56,6 +64,8 @@ class GPtideVecchia(GPtide):
         nn_array: numpy.ndarray
             the nearest neighbours array (if pre-computed)
             default is None
+        P: int
+            number of output dimensions
         jitter: float
             small value added to the diagonal of the covariance matrix
             default is 1e-7
@@ -70,54 +80,43 @@ class GPtideVecchia(GPtide):
         """       
         # Init calls `_calc_cov` and `_calc_weights` which we re-defined below
         GPtide.__init__(self, xd, xm, noise_var, cov_func, cov_params, **kwargs)
+        self.cov_params = np.array(self.cov_params)
         
-        # Set the number of nearest neightbours before calling init
+        # Set the number of nearest neightbours
         try:
             self.nnum = int(self.nnum)
         except:
             raise TypeError('numneighbours must be an integer (or castable to an integer)')
         assert self.nnum > 1, 'numneighbours must be greater than 1'
+        
+        # Check mean and change to length N array if float supplied
+        self._check_mean()
                     
+        # Run the re-ordering function 
+        self._reorder_inputs()
+            
         # Build the scaling matrix
-        assert len(self.cov_params[1:]) == self.D, 'Number of covariance length scales must match the number of dimensions'
-        if 'offdiags' in self.cov_kwargs:
-            self.offdiags = self.cov_kwargs['offdiags']
-        else:
-            self.offdiags = None
-        
-        self._build_scale_matrix(self.cov_params[1:], self.offdiags)
-        
-        # Run the re-ordering function
-        if self.order_func is not None:
-            self.ord = self.order_func(self.order_params, **self.order_kwargs)
-        else:
-            self.ord = np.arange(self.N)
-            print('Warning: no re-ordering specified for Vecchia GP')
-
-        # Re-order the input coords and mean
-        self.orig_ord = np.argsort(self.ord)
-        self.xd = self.xd[self.ord]
-        
-        # Check if type is float and convert to array - this is a bit shit
-        if isinstance(self.mu_d, float):
-            # self.mu_d = np.array([self.mu_d])[:,None]
-            self.mu_d = np.repeat(self.mu_d, len(self.xd))[:,None]
-        if (self.mu_d.ndim == 1):
-            if len(self.mu_d) == 1:
-                self.mu_d = np.repeat(self.mu_d, len(self.xd))
+        if self.scale_coords:
+            # assert 'diag_idx' in self.cov_kwargs, 'Scaling matrix diagonal indexes must be supplied'
+            # self._build_scale_matrix(self.cov_params, self.cov_kwargs)
+            
+            if self.rotate_coords:
+                self.rotate_params = self.cov_params[4:7]
             else:
-                assert ((len(self.mu_d) == 1) | (len(self.mu_d) == len(self.xd))), 'Length of mean function must be 1 or equal to input coords' 
-            self.mu_d = self.mu_d[:,None]
-        if self.mu_d.shape[0] > 1:
-            self.mu_d = self.mu_d[self.ord]
+                self.rotate_params = np.array([0.0]*self.D)
 
-        # Re-scale everyything now so we don't have to repeat it in functions
-        self.xd = self.xd @ self.A_inv
-        self.xm = self.xm @ self.A_inv
+            # Re-scale everyything now so we don't have to repeat it in functions
+            # self.xd = self.xd @ self.A_inv
+            self.xd = transform_coordinates(self.xd, self.rotate_params, self.cov_params[1:4])
+            # self.xm = self.xm @ self.A_inv   
+            self.xm = transform_coordinates(self.xm, self.rotate_params, self.cov_params[1:4])  
             
         # Find the nearest neighbours if not supplied
         if self.nn_array is None:
             self.find_neighbours(**self.nn_kwargs)
+        else:
+            assert self.order_idx is not None, 'Order index must be supplied if nn_array is pre-computed'
+            self.nn_array = self.nn_array
             
         
     def _calc_cov(self, cov_func, cov_params):
@@ -126,12 +125,47 @@ class GPtideVecchia(GPtide):
     
     def _calc_weights(self, Kdd, sd, Kmd):
         """Calculate the cholesky factorization"""
-        return None, None     
+        return None, None 
+    
+    def _check_mean(self):
+        # Check if type is float and convert to array - this is a bit shit
+        if isinstance(self.mu_d, float):
+            self.mu_d = np.repeat(self.mu_d, len(self.xd))[:,None]
+        if (self.mu_d.ndim == 1):
+            if len(self.mu_d) == 1:
+                self.mu_d = np.repeat(self.mu_d, len(self.xd))
+            else:
+                assert len(self.mu_d) == len(self.xd), 'Length of mean function must be 1 or equal to input coords' 
+            self.mu_d = self.mu_d#[:,None]            
+    
+    def _reorder_inputs(self):
+        """Re-order the input data"""
+        if self.order_idx is not None:
+            if self.verbose:
+                print('Using supplied re-ordering indexes and ignoring any re-ordering function')
+            self.ord = self.order_idx
+        elif self.order_func is not None:
+            self.ord = self.order_func(self.order_params, **self.order_kwargs)
+        else:
+            self.ord = np.arange(self.N)
+            if self.verbose:
+                print('Warning: no re-ordering specified for Vecchia GP')
+
+        # Re-order the input coords and mean
+        self.orig_ord = np.argsort(self.ord)
+        self.xd = self.xd[self.ord]
+        self.mu_d = self.mu_d[self.ord]
         
-    def _build_scale_matrix(self, A_diags, A_offdiag=None):
-        """Build the scaling matrix for the Vecchia approximation"""
-        A = build_scaling_matrix(A_diags, A_offdiag)
-        self.A_inv = np.linalg.inv(A)
+    # def _build_scale_matrix(self, cov_params, cov_kwargs):
+    #     """Build the scaling matrix for the Vecchia approximation"""
+    #     if self.scale_coords and not self.rotate_coords:
+    #         diag_idx = cov_kwargs['diag_idx']
+    #         A = build_scaling_matrix(cov_params[diag_idx], None)
+    #     else:
+    #         assert 'offdiag_idx' in self.cov_kwargs, 'Correlation coordinate params must be supplied for rotation'
+    #         offdiag_idx = cov_kwargs['offdiag_idx']
+    #         A = build_scaling_matrix(cov_params[diag_idx], cov_params[offdiag_idx])
+    #     self.A_inv = np.linalg.inv(A)
         
     def find_neighbours(self, method='sklearn', **faiss_kwargs):
         """
@@ -158,17 +192,19 @@ class GPtideVecchia(GPtide):
         assert yd.shape[0] == self.N, ' first dimension in input data must equal '
         
         # Re-order the data to match coords
-        self.yd = yd[self.ord] - self.mu_d
+        self.yd = (yd[self.ord].T - self.mu_d.T).T
         
         # Compute prediction nearest neighbours
-        if np.array_equiv(self.xd, self.xm):
+        if np.array_equiv(self.xd[self.orig_ord], self.xm):
+            print('Using training points for prediction')
             nn_pred = self.nn_array  
+            self.xm = self.xm[self.ord]
         else:
             # Prediction points don't need re-ordering
             nn_pred = get_pred_nn(self.xm, self.xd, m=self.nnum, method=method, **faiss_kwargs)
             
-        self.mean, self.err = gp_vecch(self.xd, self.xm, nn_pred, self.yd, self.cov_func, self.cov_params[0]**2, self.sd**2)
-        return self.mu_m + self.mean, self.err**0.5
+        self.mean, self.err = gp_vecch(self.xd, self.xm, nn_pred, self.yd, self.cov_func, self.cov_params, self.sd**2)
+        return (self.mu_m + self.mean)[self.orig_ord], (self.err**0.5)[self.orig_ord]
         
     def sample_prior(self, ptype='input', samples=1, add_noise=False):
         """
@@ -181,17 +217,17 @@ class GPtideVecchia(GPtide):
             nn_array = self.nn_array
             mu = np.squeeze(self.mu_d)
             
-        elif ptype == 'output':
-            Xt = self.xm
-            nn_array = find_nn(Xt, self.nnum)
-            mu = np.squeeze(self.mu_m)
+        # elif ptype == 'output':
+        #     Xt = self.xm
+        #     nn_array = find_nn(Xt, self.nnum)
+        #     mu = np.squeeze(self.mu_m)
             
         if add_noise:
-            noise = self.sd
+            noise = self.sd**2
         else:
             noise = self.jitter
 
-        prior_samples = fmvn_mu_sp(Xt, nn_array, self.cov_func, self.cov_params[0]**2, noise**2, mu=mu, n_samples=samples)
+        prior_samples = fmvn_mu_sp(Xt, nn_array, self.cov_func, self.cov_params, noise, mu=mu, n_samples=samples)
         # Re-order samples before returning
         return prior_samples[self.orig_ord]  
         
@@ -210,7 +246,7 @@ class GPtideVecchia(GPtide):
         # Re-order the data to match coords
         self.yd = yd[self.ord]
         
-        llik = vecchia_llik(self.xd, self.yd, self.mu_d, self.nn_array, self.cov_func, self.cov_params[0]**2, self.sd**2)
+        llik = vecchia_llik(self.xd, self.yd, self.mu_d, self.nn_array, self.cov_func, self.cov_params, self.sd**2)
         return llik
     
     
@@ -241,7 +277,7 @@ class GPtideVecchia(GPtide):
         nn_pred = get_pred_nn(self.xm, self.xd, m=self.nnum)
         
         # Use gp_vecch to get the mean and variance of the predictions
-        pred_mean, pred_var = gp_vecch(self.xd, self.xm, nn_pred, self.yd, self.cov_func, self.cov_params[0]**2, self.sd**2)
+        pred_mean, pred_var = gp_vecch(self.xd, self.xm, nn_pred, self.yd, self.cov_func, self.cov_params, self.sd**2)
 
         # Draw samples from the conditional distribution
         samples_cond = np.random.randn(samples, len(pred_mean)) * np.sqrt(pred_var) + pred_mean
@@ -250,7 +286,7 @@ class GPtideVecchia(GPtide):
   
 
 # @njit(cache=True)
-def fmvn_mu_sp(X, NNarray, cov_func, scale, noise, mu=0.0, n_samples=1):
+def fmvn_mu_sp(X, NNarray, cov_func, cov_params, noise, mu=0.0, n_samples=1):
     """
     Generate multivariate Gaussian random samples with means.
     I think Ming commented out numba because it didn't make any difference (in my testing)
@@ -259,7 +295,7 @@ def fmvn_mu_sp(X, NNarray, cov_func, scale, noise, mu=0.0, n_samples=1):
     samples = np.zeros((X.shape[0], n_samples))
     
     # Compute the Vecchia approx. of the lower triangular matrix
-    L = L_matrix(X, NNarray, cov_func, noise) / np.sqrt(scale)
+    L = L_matrix(X, NNarray, cov_func, cov_params, noise)
     
     for i in prange(n_samples):
         sn = np.random.randn(d)
@@ -268,14 +304,14 @@ def fmvn_mu_sp(X, NNarray, cov_func, scale, noise, mu=0.0, n_samples=1):
     
     
 @njit(cache=True, parallel=True, fastmath=True)
-def vecchia_llik(X, y, mu, NNarray, cov_func, scale, noise):
+def vecchia_llik(X, y, mu, NNarray, cov_func, cov_params, noise):
     n = X.shape[0]
     quad, logdet = np.array([0.]), np.array([0.])
     for i in prange(n):
         idx = NNarray[i]
         idx = idx[idx>=0][::-1]
-        xi, yi, mi = X[idx,:], y[idx,:], mu[idx,:]
-        Ki = scale * K_matrix(xi, xi, cov_func, noise)
+        xi, yi, mi = X[idx,:], y[idx,:], mu[idx]
+        Ki = K_matrix(xi, xi, cov_func, cov_params, noise)
         Li = np.linalg.cholesky(Ki)  
         Liyi = forward_solve(Li, yi - mi)
         
@@ -290,7 +326,7 @@ def vecchia_llik(X, y, mu, NNarray, cov_func, scale, noise):
 
 
 @njit(cache=True)
-def K_matrix(X, Xpr, cov_func, noise):
+def K_matrix(X, Xpr, cov_func, cov_params, noise):
     """
     Compute the covariance matrix using the specified kernel.
     
@@ -303,41 +339,29 @@ def K_matrix(X, Xpr, cov_func, noise):
     Returns:
     Covariance matrix.
     """
-    # Determine whether to compute the full matrix - only required for somapling the conditional distribution 
-    full_loop = True
-    if X.shape[0] == Xpr.shape[0]:
-        if np.equal(X, Xpr).all():
-            full_loop = False
+    # # Determine whether to compute the full matrix - only required for somapling the conditional distribution 
+    # full_loop = True
+    # if X.shape[0] == Xpr.shape[0]:
+    #     if np.equal(X, Xpr).all():
+    #         full_loop = False
         
-    nx, d = X.shape
+    nx, _ = X.shape
     nxpr, _ = Xpr.shape
     K = np.zeros((nx, nxpr))
 
     for i in range(nx):
-        if not full_loop:
-            # only going up to the diagonal here
-            for j in range(i + 1):
-                if i == j:
-                    K[i, j] = 1.0 + noise
-                else:
-                    dist = 0.0
-                    for k in range(d):
-                        dist += (X[i,k] - Xpr[j,k])**2
-                    K[i, j] = cov_func(dist**0.5, 1.0)
-                    K[j, i] = K[i, j]
-        else:
-            # going across the whole matrix here - better to stack the X an dXpr matrices first and use the above loop
-            # (see gp_vecch) but leaving this functionality in for full posterior sigma calc
-            for j in range(nxpr):
-                dist = 0.0
-                for k in range(d):
-                    dist += (X[i,k] - Xpr[j,k])**2                
-                K[i, j] = cov_func(dist**0.5, 1.0) # don't add the [j, i] index here
+        # if not full_loop:
+        for j in range(i + 1):
+            if i == j:
+                K[i, j] = cov_func(X[i,:], Xpr[j,:], cov_params) + noise
+            else:
+                K[i, j] = cov_func(X[i,:], Xpr[j,:], cov_params)
+                K[j, i] = K[i, j]
     return K
 
 
 @njit(cache=True, parallel=True)
-def L_matrix(X, NNarray, cov_func, noise):
+def L_matrix(X, NNarray, cov_func, cov_params, noise):
     """
     Compute the lower triangular matrix L for each row of the input matrix X, using only the nearest neighbours in NNarray.
     """
@@ -350,7 +374,7 @@ def L_matrix(X, NNarray, cov_func, noise):
         Ii = np.zeros(bsize)
         Ii[-1] = 1.0
         xi = X[idx,:]
-        Ki = K_matrix(xi, xi, cov_func, noise)
+        Ki = K_matrix(xi, xi, cov_func, cov_params, noise)
         Li = np.linalg.cholesky(Ki)
         LiIi = backward_solve(Li.T, Ii)
         L_matrix[i, :bsize] = LiIi.T[0][::-1]
@@ -358,7 +382,7 @@ def L_matrix(X, NNarray, cov_func, noise):
 
 
 @njit(cache=True, parallel=True)
-def gp_vecch(xd, xm, NNarray, yd, cov_func, scale, noise):
+def gp_vecch(xd, xm, NNarray, yd, cov_func, cov_params, noise):
     """
         Make GP predictions using the Vecchia approximation.
 
@@ -391,7 +415,7 @@ def gp_vecch(xd, xm, NNarray, yd, cov_func, scale, noise):
         # Stack the training and prediction points
         Xi = np.vstack((xd[idx, :], xm[i:i+1, :]))
         # Compute the covariance matrix
-        Ki = scale * K_matrix(Xi, Xi, cov_func, noise)
+        Ki = K_matrix(Xi, Xi, cov_func, cov_params, noise)
         Li = np.linalg.cholesky(Ki)
         yi = yd[idx]
         pred_mean[i] = np.dot(Li[-1, :-1], forward_solve(Li[:-1, :-1], yi).flatten())
@@ -436,3 +460,24 @@ def build_scaling_matrix(length_scales, covariances):
                 k += 1
 
         return covariance_matrix
+
+
+# def rotation_matrix_3d(theta_x, theta_y, theta_z):
+#     # Rotation matrix around the x-axis
+#     R_x = np.array([[1, 0, 0],
+#                     [0, np.cos(theta_x), -np.sin(theta_x)],
+#                     [0, np.sin(theta_x), np.cos(theta_x)]])
+    
+#     # Rotation matrix around the y-axis
+#     R_y = np.array([[np.cos(theta_y), 0, np.sin(theta_y)],
+#                     [0, 1, 0],
+#                     [-np.sin(theta_y), 0, np.cos(theta_y)]])
+    
+#     # Rotation matrix around the z-axis
+#     R_z = np.array([[np.cos(theta_z), -np.sin(theta_z), 0],
+#                     [np.sin(theta_z), np.cos(theta_z), 0],
+#                     [0, 0, 1]])
+    
+#     # Combined rotation matrix
+#     R = R_z @ R_y @ R_x
+#     return R

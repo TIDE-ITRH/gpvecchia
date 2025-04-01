@@ -11,10 +11,12 @@ class GPtide(object):
     
     """
     
+    scale_coords = False
+    rotate_coords = False
+    
     mean_func = None
     mean_params = ()
     mean_kwargs = {}
-    P=1 # Number of output dimensions
     
     cov_kwargs = {}
     cov_args = ()
@@ -23,9 +25,14 @@ class GPtide(object):
     order_func = None
     order_params = ()
     order_kwargs = {}
+    order_idx = None
+    
     nn_kwargs = {}
     nnum = 30
     nn_array = None
+    P = 1
+    
+    verbose = False
         
     
     def __init__(self, xd, xm, sd, cov_func, cov_params, **kwargs):
