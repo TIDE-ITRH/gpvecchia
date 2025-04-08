@@ -18,6 +18,30 @@ def matern32(d,l):
     fac2 = np.sqrt(fac1)
     return (1 + fac2/l)*np.exp(-fac2/l)
 
+
+@njit(cache=True)
+def cosine(d, l):
+    """Non-scaled cosine base function"""
+    return np.cos(2*np.pi*np.abs(d)/l)
+
+
+
+@njit(cache=True)
+def matern32_1d(X, Xp, covparams):
+    eta, l = covparams
+    d = 0.0
+    for i in range(len(X)):
+        d += (X[i] - Xp[i])**2
+    return eta**2. * matern32(d**0.5, l)
+
+
+
+
+
+
+
+### Rotation stuff
+
 # @njit(cache=True, fastmath=True)
 def generate_quaternion(alpha, beta, gamma):
     """
@@ -85,14 +109,18 @@ def transform_coordinates(coords, rotation_params, length_scales):
     Transformed coordinates.
     """
     # Generate quaternion from reparameterized angles
-    alpha, beta, gamma = rotation_params
-    quaternion = generate_quaternion(alpha, beta, gamma)
-    
-    # Get rotation matrix from quaternion
-    rotation_matrix = quaternion_to_rotation_matrix(quaternion)
-    
-    # Apply rotation
-    scaled_coords = np.dot(rotation_matrix, coords.T)
+    if rotation_params is not None:
+        assert len(rotation_params) == 3, "rotation_params must be a list or array of length 3"
+        alpha, beta, gamma = rotation_params
+        quaternion = generate_quaternion(alpha, beta, gamma)
+        
+        # Get rotation matrix from quaternion
+        rotation_matrix = quaternion_to_rotation_matrix(quaternion)
+        
+        # Apply rotation
+        scaled_coords = np.dot(rotation_matrix, coords.T)
+    else:
+        scaled_coords = coords.T
         
     # Scale coordinates
     rotated_scaled_coords = scale_coordinates(scaled_coords, length_scales)

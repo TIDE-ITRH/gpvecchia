@@ -35,7 +35,7 @@ class GPtide(object):
     verbose = False
         
     
-    def __init__(self, xd, xm, sd, cov_func, cov_params, **kwargs):
+    def __init__(self, xd, xm, sd, covfunc, covparams, **kwargs):
         """
         Initialise GP object and evaluate mean and covatiance functions. 
         """
@@ -54,11 +54,11 @@ class GPtide(object):
         self.xm = xm
         
         self.sd = sd
-        self.cov_func = cov_func
-        self.cov_params = cov_params
+        self.covfunc = covfunc
+        self.covparams = covparams
         
         # Evaluate the covariance functions
-        self.Kmd, self.Kdd = self._calc_cov(cov_func, cov_params)
+        self.Kmd, self.Kdd = self._calc_cov(covfunc, covparams)
         
         # Evaluate the mean function
         if self.mean_func is None:
@@ -100,7 +100,7 @@ class GPtide(object):
         self.M = self.M*self.P
         
         self.xm = xm
-        self.Kmd = self.cov_func(self.xm, self.xd.T, self.cov_params, **self.mean_kwargs) 
+        self.Kmd = self.covfunc(self.xm, self.xd.T, self.covparams, **self.mean_kwargs) 
         
         # print('Updated xm')
 
@@ -110,7 +110,7 @@ class GPtide(object):
         """
         raise NotImplementedError
         
-    def _calc_cov(self, cov_func, cov_params):
+    def _calc_cov(self, covfunc, covparams):
         """
         Placeholder
         """
