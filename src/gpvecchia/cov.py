@@ -1,7 +1,10 @@
 import numpy as np
 from numba import njit
+import math
 
 
+def euclidean_distance(x1, x2):
+    return np.sqrt(((x1[:,None,:] - x2[None,:,:])**2).sum(axis=-1))
 
 @njit(cache=True)
 def matern32(d,l):
@@ -17,6 +20,26 @@ def matern32(d,l):
     fac1 = 3*d**2
     fac2 = np.sqrt(fac1)
     return (1 + fac2/l)*np.exp(-fac2/l)
+
+
+@njit(cache=True)
+def matern_general(d, eta, nu):
+    # Precompute constants
+    sqrt_2nu = math.sqrt(2 * nu)
+    gamma_factor = math.gamma(nu)
+    scale_factor = (eta**2) * (2**(1 - nu)) / gamma_factor
+
+    # Compute the scaled distance
+    cff1 = sqrt_2nu * abs(d)
+
+    # Handle the case where distance is zero
+    if cff1 == 0:
+        return eta**2
+
+    # Compute the Matern covariance
+    return scale_factor * (cff1**nu) * math.kv(nu, cff1)
+
+
 
 # @njit(cache=True, fastmath=True)
 def generate_quaternion(alpha, beta, gamma):
