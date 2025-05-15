@@ -100,13 +100,15 @@ def extract_NN_m(NN_mask, less_than_k_mask, m):
         NN_m[i,] = NN_mask[i][less_than_k_mask[i]][:m]  # Extract the nearest neighbors
     return NN_m
 
-def find_nn(x, m, method='sklearn', size=40, efSearch=100, n_jobs=-1):
+def find_nn(x, m, method='sklearn', rand=0, verbose=True, size=40, efSearch=100, n_jobs=-1):
     """
     Find the nearest neighbors for the dataset points.
     
     x: Array of dataset points.
     m: Number of nearest neighbors to find.
     method: Method for nearest neighbor search ('sklearn' or FAISS methods 'exact' or 'approx').
+    rand: Percentage of random neighbors to add.
+    verbose: Whether to print progress messages.
     size: Size parameter for FAISS approximate search.
     efSearch: efSearch parameter for FAISS approximate search.
     n_jobs: Number of parallel jobs for nearest neighbor search.
@@ -160,6 +162,29 @@ def find_nn(x, m, method='sklearn', size=40, efSearch=100, n_jobs=-1):
             NN_m = extract_NN_m(NN_mask, less_than_k_mask, m+1)  # Extract the nearest neighbors
             NNarray[query_inds_mask,:] = NN_m  # Store the nearest neighbors
             query_inds = query_inds[~ind_less_than_k]  # Update the query indices
+            
+    # Add in random neighbors
+    if rand > 0:
+        assert rand < 100, "rand must be less than 100 %"
+        int_rand = int(m*(rand/100))
+        assert int_rand < m, "you don't want to replace all your neighbours"
+        if int_rand > 1:
+            if verbose:
+                print(f"Adding {int_rand} random neighbours")
+            # Get the random indices to replace
+            row_repos = np.arange(NNarray.shape[0])
+            row_repos = np.tile(np.arange(NNarray.shape[0]), (int_rand,1)).T
+            
+            # Get the random neighbour indexes
+            int_repos = np.array([np.random.choice(range(m), size=int_rand) for i in range(n)])
+            allsets = [list(set(range(0, nx)) - set(ni)) for ni, nx in zip(NNarray, np.arange(maxval, n))]
+            
+            # Drop in the random indices
+            NNarray[row_repos[maxval:], int_repos[maxval:]] = np.array([np.random.choice(allsets[i], size=int_rand) for i in range(len(allsets))])
+        
+        else:
+            print("Chosen random number of neighbours is too small, no random neighbours added")
+
     NNarray = np.fliplr(np.sort(NNarray))  # Sort the nearest neighbors in descending order
     return NNarray
 

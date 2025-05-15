@@ -145,13 +145,13 @@ class GPtideVecchia(GPtide):
         self.xd = self.xd[self.ord]
         self.mu_d = self.mu_d[self.ord]
         
-    def find_neighbours(self, method='sklearn', **faiss_kwargs):
+    def find_neighbours(self, method='sklearn', rand=0, **faiss_kwargs):
         """
         Find the nearest neighbours for each input point in the data set. We should be re-scaling coords each time we call this. A different function is used for finding output nearest neighbours.
         
         This needs to be called inside __init__ or __call__ for gptide mle, makes more sense to call in __init__.
         """
-        self.nn_array = find_nn(self.xd, self.nnum, method=method, **faiss_kwargs)
+        self.nn_array = find_nn(self.xd, self.nnum, method=method, rand=rand, verbose=self.verbose, **faiss_kwargs)
 
     def __call__(self, yd, method='sklearn', **faiss_kwargs):
         """
