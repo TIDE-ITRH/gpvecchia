@@ -141,12 +141,12 @@ def transform_coordinates(coords, rotation_params, length_scales):
         rotation_matrix = quaternion_to_rotation_matrix(quaternion)
         
         # Apply rotation
-        scaled_coords = np.dot(rotation_matrix, coords.T)
+        rotated_coords = np.dot(rotation_matrix, coords.T)
     else:
-        scaled_coords = coords.T
+        rotated_coords = coords.T
         
     # Scale coordinates
-    rotated_scaled_coords = scale_coordinates(scaled_coords, length_scales)
+    rotated_scaled_coords = scale_coordinates(rotated_coords, length_scales)
     
     return rotated_scaled_coords.T
 

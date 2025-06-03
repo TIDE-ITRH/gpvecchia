@@ -168,7 +168,7 @@ def find_nn(x, m, method='sklearn', rand=0, verbose=True, size=40, efSearch=100,
         assert rand < 100, "rand must be less than 100 %"
         int_rand = int(m*(rand/100))
         assert int_rand < m, "you don't want to replace all your neighbours"
-        if int_rand > 1:
+        if int_rand > 0:
             if verbose:
                 print(f"Adding {int_rand} random neighbours")
             # Get the random indices to replace
