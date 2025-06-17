@@ -131,6 +131,8 @@ def transform_coordinates(coords, rotation_params, length_scales):
     Returns:
     Transformed coordinates.
     """
+    length_scales = np.squeeze(length_scales)
+    
     # Generate quaternion from reparameterized angles
     if rotation_params is not None:
         assert len(rotation_params) == 3, "rotation_params must be a list or array of length 3"
@@ -141,7 +143,7 @@ def transform_coordinates(coords, rotation_params, length_scales):
         rotation_matrix = quaternion_to_rotation_matrix(quaternion)
         
         # Apply rotation
-        rotated_coords = np.dot(rotation_matrix, coords.T)
+        rotated_coords = np.dot(np.squeeze(rotation_matrix), coords.T)
     else:
         rotated_coords = coords.T
         

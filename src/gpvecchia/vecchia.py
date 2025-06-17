@@ -64,6 +64,9 @@ class GPtideVecchia(GPtide):
         nn_array: numpy.ndarray
             the nearest neighbours array (if pre-computed)
             default is None
+        nn_append: numpy.ndarray
+            additional nearest neighbours to append to the nn_array
+            default is None
         P: int
             number of output dimensions
         jitter: float
@@ -106,6 +109,12 @@ class GPtideVecchia(GPtide):
         else:
             assert self.order_idx is not None, 'Order index must be supplied if nn_array is pre-computed'
             self.nn_array = self.nn_array
+            
+        # Append additional neighbours if supplied
+        if self.nn_append is not None:
+            self.nn_array = np.concatenate((self.nn_array, self.nn_append), axis=1)
+            if self.verbose:
+                print('Appending additional nearest neighbours to the nn_array')
             
         
     def _calc_cov(self, covfunc, covparams):

@@ -30,6 +30,7 @@ class GPtide(object):
     nn_kwargs = {}
     nnum = 30
     nn_array = None
+    nn_append = None
     P = 1
     
     verbose = False
