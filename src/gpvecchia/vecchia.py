@@ -64,6 +64,9 @@ class GPtideVecchia(GPtide):
         nn_array: numpy.ndarray
             the nearest neighbours array (if pre-computed)
             default is None
+        nn_pred_array: numpy.ndarray
+            the nearest neighbours array for prediction points (if pre-computed)
+            default is None
         nn_append: numpy.ndarray
             additional nearest neighbours to append to the nn_array
             default is None
@@ -108,7 +111,7 @@ class GPtideVecchia(GPtide):
             self.find_neighbours(**self.nn_kwargs)
         else:
             assert self.order_idx is not None, 'Order index must be supplied if nn_array is pre-computed'
-            self.nn_array = self.nn_array
+            # self.nn_array = self.nn_array
             
         # Append additional neighbours if supplied
         if self.nn_append is not None:
@@ -189,7 +192,12 @@ class GPtideVecchia(GPtide):
             return_ord = True
         else:
             # Prediction points don't need re-ordering
-            nn_pred = get_pred_nn(self.xm, self.xd, m=self.nnum, method=method, **faiss_kwargs)
+            if self.nn_pred_array is not None:
+                nn_pred = self.nn_pred_array
+                if self.verbose:
+                    print('Using pre-computed nearest neighbours for prediction')
+            else:
+                nn_pred = get_pred_nn(self.xm, self.xd, m=self.nnum, method=method, **faiss_kwargs)
             return_ord = False
             
         self.mean, self.err = gp_vecch(self.xd, self.xm, nn_pred, self.yd, self.covfunc, self.covparams, self.sd**2)
@@ -345,7 +353,7 @@ def K_matrix(X, Xpr, covfunc, covparams, noise):
     return K
 
 
-@njit(cache=True, parallel=True)
+@njit(cache=True)
 def L_matrix(X, NNarray, covfunc, covparams, noise):
     """
     Compute the lower triangular matrix L for each row of the input matrix X, using only the nearest neighbours in NNarray.
@@ -366,7 +374,7 @@ def L_matrix(X, NNarray, covfunc, covparams, noise):
     return L_matrix
 
 
-@njit(cache=True, parallel=True)
+@njit(cache=True)
 def gp_vecch(xd, xm, NNarray, yd, covfunc, covparams, noise):
     """
         Make GP predictions using the Vecchia approximation.

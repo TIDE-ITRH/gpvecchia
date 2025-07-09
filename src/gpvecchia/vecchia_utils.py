@@ -189,15 +189,16 @@ def find_nn(x, m, method='sklearn', rand=0, verbose=True, size=40, efSearch=100,
     return NNarray
 
 
-def select_random_indices(X, p, min_distances, max_distances, max_valid_indices):
+def select_random_indices(query, x, p, min_distances, max_distances, max_valid_indices):
     """
-    For each point in X, select p random indices of other points in X
+    For each point in query, select p random indices of points in x
     such that the chosen points are within the specified per-dimension
     min and max distances from the current point, and are less than
     max_valid_indices[i] for each i.
 
     Args:
-        X: ndarray of shape (n, d)
+        query: array of prediction points to query
+        x: ndarray of shape (n, d)
         p: number of random indices to select per point
         min_distances: array-like of shape (d,)
         max_distances: array-like of shape (d,)
@@ -207,18 +208,21 @@ def select_random_indices(X, p, min_distances, max_distances, max_valid_indices)
         indices: ndarray of shape (n, p)
     """
     import numpy as np
+    assert np.shape(query)[1] == np.shape(x)[1], "query and x must have the same number of dimensions"
 
-    X = np.asarray(X)
-    n, d = X.shape
+    x = np.asarray(x)
+    query = np.asarray(query)
+    n, d = query.shape
     min_distances = np.asarray(min_distances)
     max_distances = np.asarray(max_distances)
     max_valid_indices = np.asarray(max_valid_indices)
     indices = np.full((n, p), -1, dtype=int)
 
     for i in range(n):
-        diffs = np.abs(X - X[i])
-        mask = np.all((diffs >= min_distances) & (diffs <= max_distances), axis=1)
-        mask[i] = False  # Exclude self
+        diffs = np.abs(x - query[i])
+        mask = np.any((diffs >= min_distances) & (diffs <= max_distances), axis=1)
+        # mask[i] = False  # Exclude self
+        mask[np.sum(diffs, axis=1)==0] = False  # Exclude self if distances are zero
         # Only allow indices less than max_valid_indices[i]
         mask[:max_valid_indices[i]] = mask[:max_valid_indices[i]]
         mask[max_valid_indices[i]:] = False
