@@ -133,3 +133,6 @@ dmypy.json
 *.nc
 *.csv
 *.zarr
+
+# Large animations
+*.mp4

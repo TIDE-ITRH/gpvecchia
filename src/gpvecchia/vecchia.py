@@ -218,10 +218,11 @@ class GPtideVecchia(GPtide):
             nn_array = self.nn_array
             mu = np.squeeze(self.mu_d)
             
-        # elif ptype == 'output':
-        #     Xt = self.xm
-        #     nn_array = find_nn(Xt, self.nnum)
-        #     mu = np.squeeze(self.mu_m)
+        elif ptype == 'output':
+            Xt = self.xm
+            # nn_array = get_pred_nn(Xt, Xt, m=self.nnum) # This should work - need to investigate
+            nn_array = find_nn(Xt, self.nnum, verbose=self.verbose)
+            mu = np.squeeze(self.mu_m)
             
         if add_noise:
             noise = self.sd**2
@@ -229,8 +230,11 @@ class GPtideVecchia(GPtide):
             noise = self.jitter
 
         prior_samples = fmvn_mu_sp(Xt, nn_array, self.covfunc, self.covparams, noise, mu=mu, n_samples=samples)
-        # Re-order samples before returning
-        return prior_samples[self.orig_ord]  
+        if ptype == 'input':
+            # Re-order samples before returning
+            return prior_samples[self.orig_ord]  
+        elif ptype == 'output':
+            return prior_samples
         
     def log_marg_likelihood(self, yd):
         """Compute the log-likelihood function of the GP under Vecchia approximation.
@@ -251,7 +255,7 @@ class GPtideVecchia(GPtide):
         return float(llik)
     
     
-    def conditional(self, yd, samples=1):
+    def conditional(self, yd, samples=1, prior_samples=None):
         """
         Draw samples from the conditional distribution given observed data.
 
@@ -271,19 +275,13 @@ class GPtideVecchia(GPtide):
             yd = yd[:, None]
         assert yd.shape[0] == self.N, 'First dimension in input data must equal the number of training points'
 
-        # Re-order the data to match coords
+        # Re-order the data to match coords !! I don't think we need to re-order for this, but it's working this way 
         self.yd = yd[self.ord] - self.mu_d
 
-        # Compute prediction nearest neighbours
-        nn_pred = get_pred_nn(self.xm, self.xd, m=self.nnum)
-        
-        # Use gp_vecch to get the mean and variance of the predictions
-        pred_mean, pred_var = gp_vecch(self.xd, self.xm, nn_pred, self.yd, self.covfunc, self.covparams, self.sd**2)
+        # Computing conditional 
+        samples_cond, prior_samples = conditional_from_prior(self.xd, self.xm, self.yd, self.covfunc, self.covparams, self.sd**2, prior_samples=prior_samples, n_samples=samples, verbose=self.verbose)
 
-        # Draw samples from the conditional distribution
-        samples_cond = np.random.randn(samples, len(pred_mean)) * np.sqrt(pred_var) + pred_mean
-
-        return samples_cond.T
+        return samples_cond, prior_samples
   
 
 # @njit(cache=True)
@@ -353,7 +351,7 @@ def K_matrix(X, Xpr, covfunc, covparams, noise):
     return K
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def L_matrix(X, NNarray, covfunc, covparams, noise):
     """
     Compute the lower triangular matrix L for each row of the input matrix X, using only the nearest neighbours in NNarray.
@@ -374,7 +372,7 @@ def L_matrix(X, NNarray, covfunc, covparams, noise):
     return L_matrix
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def gp_vecch(xd, xm, NNarray, yd, covfunc, covparams, noise):
     """
         Make GP predictions using the Vecchia approximation.
@@ -414,6 +412,145 @@ def gp_vecch(xd, xm, NNarray, yd, covfunc, covparams, noise):
         pred_mean[i] = np.dot(Li[-1, :-1], forward_solve(Li[:-1, :-1], yi).flatten())
         pred_var[i] = Li[-1, -1]**2
     return pred_mean, pred_var
+
+
+
+def conditional_from_prior(xd, xm, y, covfunc, covparams, noise, prior_samples=None, n_samples=1, verbose=False):
+    """
+    Build conditional sample(s) at prediction locations xm by adjusting a prior
+    sample using the Vecchia local conditionals.
+
+    Parameters
+    ----------
+    xd : (N, D) array  -- training coords
+    xm : (M, D) array  -- prediction coords
+    y : (N,) or (N, n_rhs) -- observed values at training coords (must be in same ordering used to generate prior_samples)
+    covfunc, covparams, noise : passed to K_matrix
+    prior_samples : optional
+        If None, the function will draw a joint prior sample at [xd; xm] using fmvn_mu_sp.
+        If provided, it must be an array of shape (N+M,) or (N+M, n_samples) matching the combined ordering [xd; xm].
+    n_samples : int, default=1
+        Number of samples to draw (if prior_samples is None).
+
+    Returns
+    -------
+    s_p_cond : (M,) array conditional sample at xm (or (M, n_samples) if multiple samples)
+    """
+
+    N = xd.shape[0]
+    M = xm.shape[0]
+
+    #ensure y shape
+    y = np.asarray(y)
+    if y.ndim == 1:
+        y = y[:, None]   # (N, 1) for consistent linear algebra
+
+    X_comb = np.vstack((xd, xm))
+
+    if verbose:
+        print('Finding neighbours')
+    NN_comb = find_nn(X_comb, m=30)
+    NN_pred = get_pred_nn(xm, xd, m=30)
+
+    if prior_samples is None:
+        if verbose:
+            print('Neighbours found... sampling prior')
+            
+        joint_prior = fmvn_mu_sp(X_comb, NN_comb, covfunc, covparams, noise, mu=0.0, n_samples=n_samples)
+        joint_prior = np.atleast_2d(joint_prior)
+        if n_samples == 1:
+            joint_prior = joint_prior.T   # ensure shape (N+M, 1)
+    else:
+        joint_prior = np.atleast_2d(prior_samples)
+        # ensure shape: (N+M, n_samples)
+        if joint_prior.shape[0] != N + M:
+            raise ValueError("prior_samples must be length N+M when prior_on='joint'")
+
+    s_inputs = joint_prior[:N, :]   # (N, n_samples)
+    s_preds  = joint_prior[N:, :]   # (M, n_samples)
+
+    # Prepare output
+    s_preds_cond = np.zeros_like(s_preds)   # (M, n_samples)
+
+    # If multiple samples exist, handle each column separately
+    # n_samples = joint_prior.shape[1]
+    s_inputs = joint_prior[:N, :]   # (N, n_samples)
+    s_preds  = joint_prior[N:, :]   # (M, n_samples)
+
+    # # Prepare output
+    # s_preds_cond = np.zeros_like(s_preds)   # (M, n_samples)
+
+    if verbose:
+        print('Computing conditional')
+        
+    s_preds_cond = conditional_from_prior_numba(xd, xm, y, covfunc, covparams, noise, NN_pred, joint_prior, n_samples)
+        
+    # for i in range(M):
+    #     idx = NN_pred[i]
+    #     idx = idx[idx >= 0]
+    #     bsize = len(idx)
+
+    #     Xi = np.vstack((xd[idx, :], xm[i:i+1, :]))
+    #     Ki = K_matrix(Xi, Xi, covfunc, covparams, noise=noise)  # no noise here yet
+
+    #     # Local blocks
+    #     Ktt = Ki[:-1, :-1]
+    #     Kpt = Ki[-1, :-1]
+
+    #     # Add obs noise on training block
+    #     Ktt = Ktt + np.eye(bsize)*noise 
+        
+    #     # Factorize
+    #     L_tt = np.linalg.cholesky(Ktt) 
+
+    #     for sidx in range(n_samples):
+
+    #         # Compute residual
+    #         s_o_local = s_inputs[idx, sidx][:, None]
+    #         y_local   = y[idx, None]
+
+    #         r_local = y_local - s_o_local
+
+    #         v = np.linalg.solve(L_tt, r_local)
+    #         alpha = np.linalg.solve(L_tt.T, v)
+
+    #         correction = Kpt @ alpha
+    #         s_preds_cond[i, sidx] = s_preds[i, sidx] + correction.ravel()[0]
+    if n_samples > 1:
+        return s_preds_cond, s_preds
+    else:
+        return s_preds_cond[:, 0], s_preds[:, 0]
+    
+    
+@njit(cache=True, parallel=True)
+def conditional_from_prior_numba(xd, xm, y, covfunc, covparams, noise, NN_pred, joint_prior, n_samples):
+    N = xd.shape[0]
+    M = xm.shape[0]
+    s_inputs = joint_prior[:N, :]   # (N, n_samples)
+    s_preds  = joint_prior[N:, :]   # (M, n_samples)
+    s_preds_cond = np.zeros_like(s_preds)   # (M, n_samples)
+
+    for i in prange(M):
+        idx = NN_pred[i]
+        idx = idx[idx >= 0]
+        bsize = len(idx)
+        Xi = np.vstack((xd[idx, :], xm[i:i+1, :]))
+        Ki = K_matrix(Xi, Xi, covfunc, covparams, noise)
+        Ktt = Ki[:-1, :-1] + np.eye(bsize)*noise
+        Kpt = Ki[-1, :-1]
+        L_tt = np.linalg.cholesky(Ktt)
+        for sidx in range(n_samples):
+            s_o_local = s_inputs[idx, sidx][:, None]
+            y_local   = y[idx]
+            r_local = y_local - s_o_local
+            # v = np.linalg.solve(L_tt, r_local)
+            v = forward_solve(L_tt, r_local)
+            # alpha = np.linalg.solve(L_tt.T, v)
+            alpha = backward_solve(L_tt.T, v)
+            correction = Kpt @ alpha
+            s_preds_cond[i, sidx] = s_preds[i, sidx] + correction.ravel()[0]
+    return s_preds_cond    
+
 
 
 def build_scaling_matrix(length_scales, covariances):
