@@ -282,20 +282,20 @@ def forward_solve_sp(L, NNarray, b):
     return x
 
 
-def build_mahalanobis(diag_elements, offdiag_element=None):
-    """
-    Build a Mahalanobis matrix with specified diagonal and optional off-diagonal elements.
+# def build_mahalanobis(diag_elements, offdiag_element=None):
+    # """
+    # Build a Mahalanobis matrix with specified diagonal and optional off-diagonal elements.
     
-    diag_elements: List or array of diagonal elements.
-    offdiag_element: Optional off-diagonal element (default is None, meaning no off-diagonal elements).
+    # diag_elements: List or array of diagonal elements.
+    # offdiag_element: Optional off-diagonal element (default is None, meaning no off-diagonal elements).
     
-    Returns:
-    Mahalanobis matrix of shape (dim, dim).
-    """
-    dim = len(diag_elements)
-    # Create a diagonal matrix with the specified diagonal elements
-    A = np.diag(diag_elements)
-    # If offdiag_element is specified, set the off-diagonal elements
-    if offdiag_element is not None:
-        A += offdiag_element * (np.ones((dim, dim)) - np.eye(dim))
-    return A
+    # Returns:
+    # Mahalanobis matrix of shape (dim, dim).
+    # """
+    # dim = len(diag_elements)
+    # # Create a diagonal matrix with the specified diagonal elements
+    # A = np.diag(diag_elements)
+    # # If offdiag_element is specified, set the off-diagonal elements
+    # if offdiag_element is not None:
+        # A += offdiag_element * (np.ones((dim, dim)) - np.eye(dim))
+    # return A

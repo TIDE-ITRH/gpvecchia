@@ -472,11 +472,6 @@ def conditional_from_prior(xd, xm, y, covfunc, covparams, noise, prior_samples=N
     # Prepare output
     s_preds_cond = np.zeros_like(s_preds)   # (M, n_samples)
 
-    # If multiple samples exist, handle each column separately
-    # n_samples = joint_prior.shape[1]
-    s_inputs = joint_prior[:N, :]   # (N, n_samples)
-    s_preds  = joint_prior[N:, :]   # (M, n_samples)
-
     # # Prepare output
     # s_preds_cond = np.zeros_like(s_preds)   # (M, n_samples)
 
